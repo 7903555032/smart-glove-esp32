@@ -140,9 +140,6 @@ The project uses ESP-NOW communication between two ESP32 boards for low-latency 
 # Authors
 
 - Rohit Kumar
-- Ashutosh Gupta
-- Polukonda Sai Satwik
-- Alok Raj
 
 Department of Electronics and Communication Engineering  
 BIT Mesra, Off-Campus Patna
