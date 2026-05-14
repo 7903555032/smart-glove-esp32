@@ -1,0 +1,468 @@
+#include <WiFi.h>
+#include <esp_now.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <HardwareSerial.h>
+#include <DFRobotDFPlayerMini.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+Adafruit_SSD1306 display(
+  SCREEN_WIDTH,
+  SCREEN_HEIGHT,
+  &Wire,
+  -1
+);
+
+HardwareSerial dfSerial(2);
+HardwareSerial sim800(1);
+
+DFRobotDFPlayerMini player;
+
+#define RED_LED 2
+#define BUZZER 25
+
+#define SOS_BUTTON 15
+
+#define RGB_R 13
+#define RGB_G 12
+#define RGB_B 14
+
+#define SOS_BUZZER 33
+
+#define DF_RX 26
+#define DF_TX 27
+
+#define SIM_RX 16
+#define SIM_TX 17
+
+typedef struct {
+
+  float temp;
+  float bpm;
+  float spo2;
+
+  char gesture[10];
+
+  bool messageFlag;
+
+} Packet;
+
+Packet data;
+
+unsigned long lastReceive = 0;
+unsigned long lastMessage = 0;
+unsigned long lastOLEDUpdate = 0;
+
+bool oledOK = false;
+
+bool lastSOS = HIGH;
+
+bool messageScreen = false;
+
+String currentMessage = "";
+
+String decode(String g) {
+
+  if(g=="11111") return "SOS";
+
+  if(g=="01111") return "WASHROOM";
+
+  if(g=="11110") return "NO";
+
+  if(g=="01110") return "CALL";
+
+  if(g=="11101") return "FOOD";
+
+  if(g=="01101") return "WATER";
+
+  if(g=="11100") return "YES";
+
+  if(g=="01100") return "NORMAL";
+
+  return "UNKNOWN";
+}
+
+void showBoot(String line1,
+              String line2) {
+
+  if(!oledOK) return;
+
+  display.clearDisplay();
+
+  display.setTextSize(1);
+
+  display.setTextColor(WHITE);
+
+  display.setCursor(10,20);
+
+  display.println(line1);
+
+  display.setCursor(10,40);
+
+  display.println(line2);
+
+  display.display();
+}
+
+void showHealth(bool connected) {
+
+  if(!oledOK) return;
+
+  display.clearDisplay();
+
+  display.setTextSize(1);
+
+  display.setTextColor(WHITE);
+
+  display.setCursor(0,0);
+
+  display.print("Temp : ");
+  display.print(data.temp);
+  display.println(" C");
+
+  display.setCursor(0,16);
+
+  display.print("Pulse: ");
+  display.print(data.bpm);
+  display.println(" BPM");
+
+  display.setCursor(0,32);
+
+  display.print("SpO2 : ");
+  display.print(data.spo2);
+  display.println("%");
+
+  display.setCursor(0,48);
+
+  if(connected) {
+
+    display.print("WiFi : CONNECT");
+
+  } else {
+
+    display.print("WiFi : LOST");
+  }
+
+  display.display();
+}
+
+void showMessage() {
+
+  if(!oledOK) return;
+
+  display.clearDisplay();
+
+  display.setTextSize(1);
+
+  display.setTextColor(WHITE);
+
+  display.setCursor(0,0);
+
+  display.println("Gesture:");
+
+  display.setCursor(0,16);
+
+  display.println(data.gesture);
+
+  display.setCursor(0,36);
+
+  display.println("Message:");
+
+  display.setCursor(0,52);
+
+  display.println(currentMessage);
+
+  display.display();
+}
+
+void showSOS() {
+
+  if(!oledOK) return;
+
+  display.clearDisplay();
+
+  display.setTextSize(2);
+
+  display.setTextColor(WHITE);
+
+  display.setCursor(10,0);
+
+  display.println("SOS");
+
+  display.setTextSize(1);
+
+  display.setCursor(0,32);
+
+  display.println("CALLING...");
+
+  display.setCursor(0,52);
+
+  display.println("7903555032");
+
+  display.display();
+}
+
+void showLost() {
+
+  if(!oledOK) return;
+
+  display.clearDisplay();
+
+  display.setTextSize(1);
+
+  display.setTextColor(WHITE);
+
+  display.setCursor(10,20);
+
+  display.println("CONNECTION LOST");
+
+  display.setCursor(10,40);
+
+  display.println("CHECK GLOVE");
+
+  display.display();
+}
+
+void playVoice() {
+
+  player.play(1);
+}
+
+void gestureSOS() {
+
+  showSOS();
+
+  digitalWrite(BUZZER,HIGH);
+
+  delay(3000);
+
+  digitalWrite(BUZZER,LOW);
+
+  sim800.println("ATD7903555032;");
+}
+
+void buttonSOS() {
+
+  showSOS();
+
+  for(int i=0;i<20;i++) {
+
+    digitalWrite(SOS_BUZZER,HIGH);
+
+    digitalWrite(RGB_R,HIGH);
+
+    digitalWrite(RGB_B,LOW);
+
+    delay(120);
+
+    digitalWrite(SOS_BUZZER,LOW);
+
+    digitalWrite(RGB_R,LOW);
+
+    digitalWrite(RGB_B,HIGH);
+
+    delay(120);
+  }
+
+  digitalWrite(RGB_R,LOW);
+
+  digitalWrite(RGB_B,LOW);
+
+  sim800.println("ATD7903555032;");
+}
+
+void onReceive(const esp_now_recv_info *info,
+               const uint8_t *incomingData,
+               int len) {
+
+  memcpy(&data,
+         incomingData,
+         sizeof(data));
+
+  lastReceive = millis();
+
+  digitalWrite(RED_LED,LOW);
+
+  digitalWrite(BUZZER,LOW);
+
+  if(data.messageFlag) {
+
+    currentMessage =
+      decode(
+        String(data.gesture)
+      );
+
+    messageScreen = true;
+
+    lastMessage = millis();
+
+    showMessage();
+
+    if(currentMessage=="SOS") {
+
+      gestureSOS();
+    }
+
+    else if(currentMessage!="NORMAL") {
+
+      playVoice();
+    }
+  }
+}
+
+void setup() {
+
+  Serial.begin(115200);
+
+  delay(1000);
+
+  pinMode(RED_LED,OUTPUT);
+
+  pinMode(BUZZER,OUTPUT);
+
+  pinMode(SOS_BUTTON,INPUT_PULLUP);
+
+  pinMode(RGB_R,OUTPUT);
+
+  pinMode(RGB_G,OUTPUT);
+
+  pinMode(RGB_B,OUTPUT);
+
+  pinMode(SOS_BUZZER,OUTPUT);
+
+  digitalWrite(RED_LED,LOW);
+
+  digitalWrite(BUZZER,LOW);
+
+  digitalWrite(SOS_BUZZER,LOW);
+
+  digitalWrite(RGB_R,LOW);
+
+  digitalWrite(RGB_G,LOW);
+
+  digitalWrite(RGB_B,LOW);
+
+  Wire.begin(21,22);
+
+  delay(500);
+
+  oledOK =
+    display.begin(
+      SSD1306_SWITCHCAPVCC,
+      0x3C
+    );
+
+  if(!oledOK) {
+
+    while(true);
+  }
+
+  showBoot(
+    "CENTRAL UNIT",
+    "STARTING..."
+  );
+
+  delay(2000);
+
+  showBoot(
+    "SCANNING",
+    "NETWORK..."
+  );
+
+  dfSerial.begin(
+    9600,
+    SERIAL_8N1,
+    DF_RX,
+    DF_TX
+  );
+
+  delay(1500);
+
+  player.begin(dfSerial);
+
+  player.volume(25);
+
+  sim800.begin(
+    9600,
+    SERIAL_8N1,
+    SIM_RX,
+    SIM_TX
+  );
+
+  delay(3000);
+
+  WiFi.mode(WIFI_STA);
+
+  delay(1000);
+
+  if(esp_now_init()!=ESP_OK) {
+
+    showBoot(
+      "ESP NOW",
+      "FAILED"
+    );
+
+    while(true);
+  }
+
+  esp_now_register_recv_cb(onReceive);
+
+  showBoot(
+    "CONNECTION",
+    "ESTABLISHED"
+  );
+
+  delay(2000);
+
+  showHealth(false);
+}
+
+void loop() {
+
+  bool currentSOS =
+    digitalRead(SOS_BUTTON);
+
+  if(lastSOS==HIGH &&
+     currentSOS==LOW) {
+
+    delay(50);
+
+    if(digitalRead(SOS_BUTTON)==LOW) {
+
+      buttonSOS();
+    }
+  }
+
+  lastSOS = currentSOS;
+
+  if(millis()-lastReceive > 15000) {
+
+    digitalWrite(RED_LED,HIGH);
+
+    digitalWrite(BUZZER,HIGH);
+
+    showLost();
+  }
+
+  else {
+
+    digitalWrite(BUZZER,LOW);
+
+    if(messageScreen &&
+       millis()-lastMessage > 5000) {
+
+      messageScreen = false;
+    }
+
+    if(!messageScreen &&
+       millis()-lastOLEDUpdate > 1000) {
+
+      showHealth(true);
+
+      lastOLEDUpdate = millis();
+    }
+  }
+}
