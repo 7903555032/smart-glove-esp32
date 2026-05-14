@@ -1,0 +1,237 @@
+/*
+========================================================
+ SMART GLOVE UNIT CODE
+ ESP32 + Flex Sensors + DS18B20 + OLED + ESP-NOW
+========================================================
+*/
+
+#include <WiFi.h>
+#include <esp_now.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+// ================= OLED =================
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+Adafruit_SSD1306 display(
+  SCREEN_WIDTH,
+  SCREEN_HEIGHT,
+  &Wire,
+  -1
+);
+
+// ================= FLEX SENSOR PINS =================
+#define FLEX1 32
+#define FLEX2 33
+#define FLEX3 34
+#define FLEX4 35
+#define FLEX5 36
+
+// ================= DS18B20 =================
+#define ONE_WIRE_BUS 4
+
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+// ================= FLEX THRESHOLDS =================
+// Adjust according to calibration
+int TH1 = 2200;
+int TH2 = 2200;
+int TH3 = 2200;
+int TH4 = 2200;
+int TH5 = 2200;
+
+// ================= RECEIVER MAC ADDRESS =================
+// CHANGE THIS TO CENTRAL UNIT MAC ADDRESS
+uint8_t receiverMac[] = {0x24, 0x6F, 0x28, 0xAA, 0xBB, 0xCC};
+
+// ================= DATA STRUCTURE =================
+typedef struct struct_message {
+  char gesture[30];
+  float temperature;
+  int f1;
+  int f2;
+  int f3;
+  int f4;
+  int f5;
+} struct_message;
+
+struct_message dataToSend;
+
+// ================= ESP-NOW CALLBACK =================
+void OnDataSent(
+  const uint8_t *mac_addr,
+  esp_now_send_status_t status
+)
+{
+  Serial.print("Send Status: ");
+
+  if (status == ESP_NOW_SEND_SUCCESS)
+    Serial.println("Success");
+  else
+    Serial.println("Fail");
+}
+
+// ================= FUNCTION =================
+String detectGesture(
+  int b1,
+  int b2,
+  int b3,
+  int b4,
+  int b5
+)
+{
+  String pattern =
+    String(b1) +
+    String(b2) +
+    String(b3) +
+    String(b4) +
+    String(b5);
+
+  if (pattern == "00000") return "NORMAL";
+  if (pattern == "11111") return "SOS";
+  if (pattern == "01111") return "YES";
+  if (pattern == "10111") return "NO";
+  if (pattern == "00111") return "NEED WATER";
+  if (pattern == "11110") return "WASHROOM";
+  if (pattern == "10011") return "NEED FOOD";
+  if (pattern == "00011") return "CALL";
+
+  return "UNKNOWN";
+}
+
+// ================= SETUP =================
+void setup()
+{
+  Serial.begin(115200);
+
+  // OLED
+  Wire.begin();
+
+  if (!display.begin(
+        SSD1306_SWITCHCAPVCC,
+        0x3C))
+  {
+    Serial.println("OLED Failed");
+    while (1);
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+
+  // DS18B20
+  sensors.begin();
+
+  // WiFi
+  WiFi.mode(WIFI_STA);
+
+  // ESP-NOW INIT
+  if (esp_now_init() != ESP_OK)
+  {
+    Serial.println("ESP-NOW Init Failed");
+    return;
+  }
+
+  esp_now_register_send_cb(OnDataSent);
+
+  // Add Peer
+  esp_now_peer_info_t peerInfo;
+
+  memcpy(peerInfo.peer_addr, receiverMac, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+
+  if (esp_now_add_peer(&peerInfo) != ESP_OK)
+  {
+    Serial.println("Failed to Add Peer");
+    return;
+  }
+
+  Serial.println("Glove Unit Ready");
+}
+
+// ================= LOOP =================
+void loop()
+{
+  // -------- FLEX READINGS --------
+  int v1 = analogRead(FLEX1);
+  int v2 = analogRead(FLEX2);
+  int v3 = analogRead(FLEX3);
+  int v4 = analogRead(FLEX4);
+  int v5 = analogRead(FLEX5);
+
+  // -------- BEND DETECTION --------
+  int b1 = (v1 > TH1) ? 1 : 0;
+  int b2 = (v2 > TH2) ? 1 : 0;
+  int b3 = (v3 > TH3) ? 1 : 0;
+  int b4 = (v4 > TH4) ? 1 : 0;
+  int b5 = (v5 > TH5) ? 1 : 0;
+
+  // -------- GESTURE --------
+  String gesture = detectGesture(
+                     b1, b2, b3, b4, b5
+                   );
+
+  // -------- TEMPERATURE --------
+  sensors.requestTemperatures();
+  float tempC = sensors.getTempCByIndex(0);
+
+  // -------- SERIAL MONITOR --------
+  Serial.println("======================");
+  Serial.print("F1: "); Serial.println(v1);
+  Serial.print("F2: "); Serial.println(v2);
+  Serial.print("F3: "); Serial.println(v3);
+  Serial.print("F4: "); Serial.println(v4);
+  Serial.print("F5: "); Serial.println(v5);
+
+  Serial.print("Gesture: ");
+  Serial.println(gesture);
+
+  Serial.print("Temp: ");
+  Serial.println(tempC);
+
+  // -------- OLED DISPLAY --------
+  display.clearDisplay();
+
+  display.setCursor(0, 0);
+  display.println("SMART GLOVE");
+
+  display.setCursor(0, 15);
+  display.print("Gesture:");
+  display.println(gesture);
+
+  display.setCursor(0, 30);
+  display.print("Temp:");
+  display.print(tempC);
+  display.println(" C");
+
+  display.display();
+
+  // -------- PREPARE DATA --------
+  gesture.toCharArray(
+    dataToSend.gesture,
+    sizeof(dataToSend.gesture)
+  );
+
+  dataToSend.temperature = tempC;
+
+  dataToSend.f1 = v1;
+  dataToSend.f2 = v2;
+  dataToSend.f3 = v3;
+  dataToSend.f4 = v4;
+  dataToSend.f5 = v5;
+
+  // -------- SEND DATA --------
+  esp_now_send(
+    receiverMac,
+    (uint8_t *) &dataToSend,
+    sizeof(dataToSend)
+  );
+
+  delay(1000);
+}
